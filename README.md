@@ -60,3 +60,7 @@ I'm doing this last-minute so I don't expect much leeway, but felt I should ment
 
 
 Required Screenshot: 
+
+
+![serverVSgradebot](https://github.com/user-attachments/assets/25fa0415-038f-4621-b53e-5c9be95fe778)
+
