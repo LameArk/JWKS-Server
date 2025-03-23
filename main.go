@@ -3,19 +3,45 @@ package main
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const dbPath = "./totally_not_my_privateKeys.db" //path to database
+
+//open or create sqlite database
+func createDatabase() {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	sql := "CREATE TABLE IF NOT EXISTS keys( kid INTEGER PRIMARY KEY AUTOINCREMENT, key BLOB NOT NULL, exp INTEGER NOT NULL);"
+
+	_, err = db.Exec(sql)
+
+	if err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+
+	fmt.Printf("Database connected to created successfully at %s\n", dbPath)
+}
+
 func main() {
 	genKeys()
+	createDatabase() // func to create/connect  ot database
 	http.HandleFunc("/.well-known/jwks.json", JWKSHandler)
 	http.HandleFunc("/auth", AuthHandler)
 	log.Fatal(http.ListenAndServe(":8080", nil))
