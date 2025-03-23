@@ -8,222 +8,117 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"sync"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Key struct
-type Key struct {
-	PrivateKey *rsa.PrivateKey
-	PublicKey  *rsa.PublicKey
-	ExpiresAt  time.Time
+func main() {
+	genKeys()
+	http.HandleFunc("/.well-known/jwks.json", JWKSHandler)
+	http.HandleFunc("/auth", AuthHandler)
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
 var (
-	keys               = make(map[string]Key)
-	mutex              sync.RWMutex
-	keyRefreshInterval = 10 * time.Second // ONLY FOR TESTING
+	goodPrivKey    *rsa.PrivateKey
+	expiredPrivKey *rsa.PrivateKey
 )
 
-// Key pair generation function
-func generateKeyPair() (string, *rsa.PrivateKey, *rsa.PublicKey, time.Time, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+func genKeys() {
+	// generate global key pair
+	var err error
+	goodPrivKey, err = rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return "", nil, nil, time.Time{}, err
+		log.Fatalf("Error generating RSA keys: %v", err)
 	}
-	publicKey := &privateKey.PublicKey
-	kid := randomKID()
-	expiresAt := time.Now().Add(keyRefreshInterval * 2)
 
-	return kid, privateKey, publicKey, expiresAt, nil
-}
-
-// Random KID function
-func randomKID() string {
-	num, err := rand.Int(rand.Reader, big.NewInt(1<<32))
+	// Generate an expired key pair for demonstration purposes
+	expiredPrivKey, err = rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		log.Println("Failed to generate kid:", err)
-		return base64.RawURLEncoding.EncodeToString([]byte(time.Now().String()))
+		log.Fatalf("Error generating expired RSA keys: %v", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(num.Bytes())
 }
 
-// JWKS handling function
-func jwksHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("JWKS Request START: Keys: %+v\n", keys) // Log at the start
+const goodKID = "aRandomKeyID"
 
-	if r.Method != http.MethodGet {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		return
-	}
-
-	mutex.RLock()
-	defer mutex.RUnlock()
-
-	var jwks struct {
-		Keys []map[string]interface{} `json:"keys"`
-	}
-
-	now := time.Now()
-
-	for kid, key := range keys {
-		if now.Before(key.ExpiresAt) {
-			jwk := map[string]interface{}{
-				"kid": kid,
-				"kty": "RSA",
-				"alg": "RS256",
-				"use": "sig",
-				"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
-				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
-			}
-			jwks.Keys = append(jwks.Keys, jwk)
-		}
-	}
-
-	if len(jwks.Keys) == 0 {
-		http.Error(w, "No valid JWKs available", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jwks)
-}
-
-// Authentication handling function
-func authHandler(w http.ResponseWriter, r *http.Request) {
+func AuthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	var (
+		signingKey *rsa.PrivateKey
+		keyID      string
+		exp        int64
+	)
 
-	expired := r.URL.Query().Get("expired") == "true"
+	// Default to the good key
+	signingKey = goodPrivKey
+	keyID = goodKID
+	exp = time.Now().Add(1 * time.Hour).Unix()
 
-	mutex.RLock()
-	defer mutex.RUnlock()
-
-	var chosenKey *Key
-	var kid string
-
-	for k, key := range keys {
-		if expired || time.Now().Before(key.ExpiresAt) {
-			chosenKey = &key
-			kid = k
-			break
-		}
+	// If the expired query parameter is set, use the expired key
+	if expired, _ := strconv.ParseBool(r.URL.Query().Get("expired")); expired {
+		signingKey = expiredPrivKey
+		keyID = "expiredKeyId"
+		exp = time.Now().Add(-1 * time.Hour).Unix()
 	}
 
-	if chosenKey == nil {
-		http.Error(w, "No suitable key available", http.StatusNotFound)
-		return
-	}
-
-	expTime := time.Now().Add(5 * time.Minute)
-	if expired {
-		expTime = chosenKey.ExpiresAt.Add(-1 * time.Second)
-	}
-
+	// Create the token with the expiry
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"exp": expTime.Unix(),
+		"exp": exp,
 	})
-	token.Header["kid"] = kid
-
-	tokenString, err := token.SignedString(chosenKey.PrivateKey)
+	// Set the key ID header
+	token.Header["kid"] = keyID
+	// Sign the token with the private key
+	signedToken, err := token.SignedString(signingKey)
 	if err != nil {
-		http.Error(w, "Failed to sign token", http.StatusInternalServerError)
+		http.Error(w, "failed to sign token", http.StatusInternalServerError)
 		return
+	}
+
+	_, _ = w.Write([]byte(signedToken))
+}
+
+type (
+	JWKS struct {
+		Keys []JWK `json:"keys"`
+	}
+	JWK struct {
+		KID       string `json:"kid"`
+		Algorithm string `json:"alg"`
+		KeyType   string `json:"kty"`
+		Use       string `json:"use"`
+		N         string `json:"n"`
+		E         string `json:"e"`
+	}
+)
+
+func JWKSHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	base64URLEncode := func(b *big.Int) string {
+		return base64.RawURLEncoding.EncodeToString(b.Bytes())
+	}
+	publicKey := goodPrivKey.Public().(*rsa.PublicKey)
+	resp := JWKS{
+		Keys: []JWK{
+			{
+				KID:       goodKID,
+				Algorithm: "RS256",
+				KeyType:   "RSA",
+				Use:       "sig",
+				N:         base64URLEncode(publicKey.N),
+				E:         base64URLEncode(big.NewInt(int64(publicKey.E))),
+			},
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
-	log.Printf("Auth Request (expired=%v): Kid: %s, ExpiresAt: %v\n", expired, kid, chosenKey.ExpiresAt)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// Function to refresh keys
-func refreshKeys() {
-	log.Println("refreshKeys started")
-	for {
-		time.Sleep(keyRefreshInterval)
-
-		kid, privateKey, publicKey, expiresAt, err := generateKeyPair()
-		if err != nil {
-			log.Println("Error generating new key pair:", err)
-			continue
-		}
-
-		mutex.Lock()
-		keys[kid] = Key{PrivateKey: privateKey, PublicKey: publicKey, ExpiresAt: expiresAt}
-		mutex.Unlock()
-		log.Printf("New Key: Kid: %s, ExpiresAt: %v, Keys: %+v\n", kid, expiresAt, keys)
-		log.Printf("Keys before removal: %+v\n", keys)
-
-		// Remove expired keys (with a grace period)
-		mutex.Lock()
-		now := time.Now()
-		gracePeriod := keyRefreshInterval
-		for k, key := range keys {
-			if now.After(key.ExpiresAt.Add(gracePeriod)) {
-				delete(keys, k)
-				log.Printf("Key %s expired and removed.\n", k)
-			}
-		}
-		mutex.Unlock()
-		log.Printf("Keys after removal: %+v\n", keys)
-		log.Println("Keys refreshed.")
-	}
-}
-
-// Function to handle expired keys
-func expireKeyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		return
-	}
-
-	kid := r.URL.Query().Get("kid")
-	if kid == "" {
-		http.Error(w, "kid parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	key, ok := keys[kid]
-	if !ok {
-		http.Error(w, "Key not found", http.StatusNotFound)
-		return
-	}
-
-	key.ExpiresAt = time.Now().Add(-1 * time.Second)
-	keys[kid] = key
-
-	log.Printf("Key %s expiry set to: %v (Unix: %d)\n", kid, key.ExpiresAt, key.ExpiresAt.Unix())
-
-	// Remove the key immediately
-	delete(keys, kid)
-	log.Printf("Key %s REMOVED immediately after expiry set. Keys: %+v\n", kid, keys)
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Key expiry updated"})
-}
-
-func main() {
-	keyRefreshInterval = 10 * time.Second // ONLY FOR TESTING
-
-	kid, privateKey, publicKey, expiresAt, err := generateKeyPair()
-	if err != nil {
-		log.Fatal("Failed to generate initial key pair:", err)
-	}
-	keys[kid] = Key{PrivateKey: privateKey, PublicKey: publicKey, ExpiresAt: expiresAt}
-
-	go refreshKeys()
-
-	http.HandleFunc("/jwks", jwksHandler)
-	http.HandleFunc("/auth", authHandler)
-	http.HandleFunc("/test/expirekey", expireKeyHandler)
-
-	log.Println("Server running on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
-}
