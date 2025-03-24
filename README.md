@@ -11,7 +11,7 @@ To Run:
         './gradebot project2'
 
 I utilized AI again to aid me in coding this project.
-We had a womderful time throwing code past one another. That is, Gemini and I. 
+We had a wonderful time throwing code past one another. That is, Gemini and I. 
 The initial prompt was as follows: 
 
     I wish to create/open a sqlite file at the beginning of running my simple JWKS server to store private keys. 
