@@ -51,8 +51,6 @@ To note, and while it is most likely an issue on my end, I kept failing these tw
       time=2025-02-16T18:43:25.251-06:00 level=ERROR msg="Valid JWK found in JWKS" err="JWKS: failed to extract response via extractor function: invalid HTTP status code: 404"
       time=2025-02-16T18:43:25.254-06:00 level=ERROR msg="Expired JWK does not exist in JWKS" err="JWKS error: failed to extract response via extractor function: invalid HTTP status code: 404"
 
-I'm doing this last-minute so I don't expect much leeway, but felt I should mention it.
 
-Required Screenshot:
 
-![serverVSgradebot](https://github.com/user-attachments/assets/25fa0415-038f-4621-b53e-5c9be95fe778)
+
